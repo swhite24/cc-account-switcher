@@ -1,11 +1,12 @@
 # Multi-Account Switcher for Claude Code
 
-A simple tool to manage and switch between multiple Claude Code accounts on macOS, Linux, and WSL.
+A simple tool to manage and switch between multiple Claude Code accounts (both OAuth and Console API key accounts) on macOS, Linux, and WSL.
 
 ## Features
 
-- **Multi-account management**: Add, remove, and list Claude Code accounts
+- **Multi-account management**: Add, remove, and list Claude Code accounts (OAuth and Console API key)
 - **Quick switching**: Switch between accounts with simple commands
+- **Mixed account types**: Supports both OAuth accounts and Console API key accounts
 - **Cross-platform**: Works on macOS, Linux, and WSL
 - **Secure storage**: Uses system keychain (macOS) or protected files (Linux/WSL)
 - **Settings preservation**: Only switches authentication - your themes, settings, and preferences remain unchanged
@@ -46,12 +47,14 @@ chmod +x ccswitch.sh
 
 ### First Time Setup
 
-1. **Log into Claude Code** with your first account (make sure you're actively logged in)
+1. **Log into Claude Code** with your first account (OAuth or Console API key)
 2. Run `./ccswitch.sh --add-account` to add it to managed accounts
 3. **Log out** and log into Claude Code with your second account
 4. Run `./ccswitch.sh --add-account` again
 5. Now you can switch between accounts with `./ccswitch.sh --switch`
 6. **Important**: After each switch, restart Claude Code to use the new authentication
+
+> **Account Types:** The switcher automatically detects whether you're using an OAuth account or a Console API key account. You can mix both types - for example, have an OAuth personal account and a Console API key work account.
 
 > **What gets switched:** Only your authentication credentials change. Your themes, settings, preferences, and chat history remain exactly the same.
 
@@ -78,14 +81,18 @@ sudo apt install jq
 
 The switcher stores account authentication data separately:
 
-- **macOS**: Credentials in Keychain, OAuth info in `~/.claude-switch-backup/`
-- **Linux/WSL**: Both credentials and OAuth info in `~/.claude-switch-backup/` with restricted permissions
+- **macOS**: Credentials in Keychain (OAuth tokens or Console API keys), OAuth/Console config in `~/.claude-switch-backup/`
+- **Linux/WSL**: Both credentials and OAuth/Console config in `~/.claude-switch-backup/` with restricted permissions
+
+The tool automatically detects your account type:
+- **OAuth accounts**: Identified by standard OAuth credentials
+- **Console API key accounts**: Identified by the presence of `customApiKeyResponses` in the config
 
 When switching accounts, it:
 
-1. Backs up the current account's authentication data
+1. Backs up the current account's authentication data (OAuth or Console API key)
 2. Restores the target account's authentication data
-3. Updates Claude Code's authentication files
+3. Updates Claude Code's authentication files with the correct credential type
 
 ## Troubleshooting
 

@@ -192,10 +192,16 @@ get_current_account() {
 read_credentials() {
     local platform
     platform=$(detect_platform)
-    
+
     case "$platform" in
         macos)
-            security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || echo ""
+            local creds
+            # Try OAuth credentials first, then Console API key
+            creds=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null || echo "")
+            if [[ -z "$creds" ]]; then
+                creds=$(security find-generic-password -s "Claude Code" -w 2>/dev/null || echo "")
+            fi
+            echo "$creds"
             ;;
         linux|wsl)
             if [[ -f "$HOME/.claude/.credentials.json" ]]; then
@@ -212,10 +218,21 @@ write_credentials() {
     local credentials="$1"
     local platform
     platform=$(detect_platform)
-    
+
     case "$platform" in
         macos)
-            security add-generic-password -U -s "Claude Code-credentials" -a "$USER" -w "$credentials" 2>/dev/null
+            # Determine credential type: JSON (OAuth) vs plain string (Console API key)
+            if jq -e . >/dev/null 2>&1 <<< "$credentials"; then
+                # OAuth credentials (JSON format)
+                security add-generic-password -U -s "Claude Code-credentials" -a "$USER" -w "$credentials" 2>/dev/null
+                # Remove Console API key entry to prevent auth conflict
+                security delete-generic-password -s "Claude Code" 2>/dev/null || true
+            else
+                # Console API key (plain string)
+                security add-generic-password -U -s "Claude Code" -a "$USER" -w "$credentials" 2>/dev/null
+                # Remove OAuth credentials entry to prevent auth conflict
+                security delete-generic-password -s "Claude Code-credentials" 2>/dev/null || true
+            fi
             ;;
         linux|wsl)
             mkdir -p "$HOME/.claude"
@@ -360,17 +377,24 @@ cmd_add_account() {
     # Get account UUID
     local account_uuid
     account_uuid=$(jq -r '.oauthAccount.accountUuid' "$(get_claude_config_path)")
-    
+
+    # Detect account type: check for customApiKeyResponses in config
+    local account_type="oauth"
+    if jq -e '.customApiKeyResponses' "$(get_claude_config_path)" >/dev/null 2>&1; then
+        account_type="console"
+    fi
+
     # Store backups
     write_account_credentials "$account_num" "$current_email" "$current_creds"
     write_account_config "$account_num" "$current_email" "$current_config"
-    
+
     # Update sequence.json
     local updated_sequence
-    updated_sequence=$(jq --arg num "$account_num" --arg email "$current_email" --arg uuid "$account_uuid" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    updated_sequence=$(jq --arg num "$account_num" --arg email "$current_email" --arg uuid "$account_uuid" --arg type "$account_type" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
         .accounts[$num] = {
             email: $email,
             uuid: $uuid,
+            accountType: $type,
             added: $now
         } |
         .sequence += [$num | tonumber] |
@@ -511,11 +535,19 @@ cmd_list() {
     echo "Accounts:"
     jq -r --arg active "$active_account_num" '
         .sequence[] as $num |
-        .accounts["\($num)"] |
+        .accounts["\($num)"] as $acc |
         if "\($num)" == $active then
-            "  \($num): \(.email) (active)"
+            if $acc.accountType == "console" then
+                "  \($num): \($acc.email) (console, active)"
+            else
+                "  \($num): \($acc.email) (oauth, active)"
+            end
         else
-            "  \($num): \(.email)"
+            if $acc.accountType == "console" then
+                "  \($num): \($acc.email) (console)"
+            else
+                "  \($num): \($acc.email) (oauth)"
+            end
         end
     ' "$SEQUENCE_FILE"
 }
@@ -641,23 +673,34 @@ perform_switch() {
     
     # Step 3: Activate target account
     write_credentials "$target_creds"
-    
-    # Extract oauthAccount from backup and validate
-    local oauth_section
+
+    # Extract oauthAccount and customApiKeyResponses from backup
+    local oauth_section custom_api_section
     oauth_section=$(echo "$target_config" | jq '.oauthAccount' 2>/dev/null)
+    custom_api_section=$(echo "$target_config" | jq '.customApiKeyResponses // null' 2>/dev/null)
+
     if [[ -z "$oauth_section" || "$oauth_section" == "null" ]]; then
         echo "Error: Invalid oauthAccount in backup"
         exit 1
     fi
-    
-    # Merge with current config and validate
+
+    # Merge with current config - include both oauthAccount and customApiKeyResponses
     local merged_config
-    merged_config=$(jq --argjson oauth "$oauth_section" '.oauthAccount = $oauth' "$(get_claude_config_path)" 2>/dev/null)
+    if [[ "$custom_api_section" != "null" ]]; then
+        # Console account: restore both oauthAccount and customApiKeyResponses
+        merged_config=$(jq --argjson oauth "$oauth_section" --argjson custom "$custom_api_section" \
+            '.oauthAccount = $oauth | .customApiKeyResponses = $custom' "$(get_claude_config_path)" 2>/dev/null)
+    else
+        # OAuth account: restore only oauthAccount, remove customApiKeyResponses if present
+        merged_config=$(jq --argjson oauth "$oauth_section" \
+            '.oauthAccount = $oauth | del(.customApiKeyResponses)' "$(get_claude_config_path)" 2>/dev/null)
+    fi
+
     if [[ $? -ne 0 ]]; then
         echo "Error: Failed to merge config"
         exit 1
     fi
-    
+
     # Use existing safe write_json function
     write_json "$(get_claude_config_path)" "$merged_config"
     
